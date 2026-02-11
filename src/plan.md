@@ -1,7 +1,6 @@
 ---
 geometry: margin=3cm
 title: Plans for Cetline's project
-subtitle: Document version 0.1.0
 date: \today
 author: Jun Ishigohoka
 colorlinks: true
@@ -188,7 +187,7 @@ PDF files are found in `literature/` folder
 
 ## Protocols {-}
 
-Protocols are found in `protocols/` folder.
+Protocols are found in `protocols_pdf/` folder.
 
 - `prep_papae.pdf`: How to prepare pupae for eclosion recording
 - `eclosion_monitor.pdf` : How to use eclosion monitors
