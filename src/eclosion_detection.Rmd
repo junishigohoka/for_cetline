@@ -1,0 +1,426 @@
+---
+title: Identification of eclosion time using `R`
+author: Jun Ishigohoka
+output: 
+  pdf_document:
+    number_sections: true
+  
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = paste0(Sys.getenv("HOME"), "/SeaDrive/My Libraries/mylib/work/supervision/Cetline/"))
+```
+
+
+
+This PDF was created from a notebook written in Rmarkdown `src/eclosion_detection.Rmd` using `rmarkdown::render`.
+The source notebook can be opened in `RStudio` and can be edited for your analysis.
+For tutorials on Rmarkdown, please see <https://rmarkdown.rstudio.com/lesson-1.html>.
+
+
+# Introduction
+
+We will detect eclosion time using `R`.
+Before eclosion, flies in pupal cases are (or more acurately, they become) pigmented.
+After eclosion the pupal case is empty and becomes semi-transparent.
+Eclosion events will be detected based on the change in pixel intensity between time points.
+
+
+# Pre-requisites
+
+- Install `R` and `RStudio`
+- Install the following `R` libraries
+  - `ggplot2`: For plotting
+  - `dplyr`: To "pipe" commands one after the other
+  - `lubridate`: To deal with date and time
+  - `zoo`: Required for rolling median computation
+- Image analysis in `FIJI` (`image_analysis.pdf`)
+  - Pixel intensity over time of pupae
+  - Centroid coordinates of pupae exported as csv
+  - Coordinates of wells of the 96-well plate as csv
+
+
+# Start R and import libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(lubridate) 
+
+```
+
+Load custom functions.
+
+```{r}
+source("scripts/detect_eclosion.R")
+```
+
+
+# Match well and FIJI ID
+
+## Overview
+
+We will assign wells (A1, B1,...) to each pupa (ROI).
+We do this by
+
+1. For each ROI, compute the distance to all wells.
+2. For each ROI, assign the closest well.
+
+
+
+## Prepare ROI coordinates
+
+Read coordinates of ROIs (i.e. pupae)
+
+```{r}
+roi_coords <- read.csv("test_data/rec_016_2025_11_12_09_40_resized_threshold_rois_edited_coords.csv")
+```
+
+Check the first few rows
+
+```{r}
+head(roi_coords)
+
+```
+
+The ID of ROIs is included in `Label`.
+Extract the ID from the `Label` column (e.g. 0331-1139).
+
+```{r}
+roi_coords <- roi_coords %>%
+  # Make a new column id by substituting all string (.*) 
+  # of column Label up to pattern ":" with ""
+  mutate(id = gsub(".*:", "", Label)) %>% 
+  # Only output these columns
+  select(id, X, Y) 
+```
+
+
+## Prepare coordinates of the 96-well plate.
+
+Read coordicates of wells of the 96-well plate.
+
+```{r}
+well_coords <- read.csv("test_data/rec_016_plate_1_coords.csv")
+```
+
+
+Check the first few rows.
+
+```{r}
+head(well_coords)
+```
+
+
+This data frame does not contain well information.
+When you made these coordinates in `FIJI`, you followed A1, B1, C1, ..., G11, G12.
+Make these strings.
+
+
+
+```{r}
+# make an outer product of the first 8 LETTERS and first 12 integers, 
+# and make it into a vector
+wells <- c(outer(LETTERS[1:8],  1:12, paste0)) 
+wells
+```
+
+
+Because `well_coords` is sorted the same way (A1, B1, ..., G12, H12), we can bind this to `well_coords` as a new column.
+
+```{r}
+well_coords <- well_coords %>%
+  mutate(well = wells) %>% # make a new column well which has values in vector wells
+  select(well, X, Y) # Only keep these columns
+
+```
+
+Confirm that a column `well` was added.
+
+```{r}
+head(well_coords)
+
+```
+
+
+Now, compute the distance between ROIs (pupae) and well centroids, then the closest well to each pupa.
+
+```{r}
+          # Make all possible combinations between id and well
+id_well <- expand.grid(id = roi_coords$id, well = well_coords$well) %>% 
+  mutate(
+    # Get X and Y of the ROI
+    x_roi = roi_coords$X[match(id, roi_coords$id)],
+    y_roi = roi_coords$Y[match(id, roi_coords$id)],
+    # Get X and Y of the well
+    x_well = well_coords$X[match(well, well_coords$well)],
+    y_well = well_coords$Y[match(well, well_coords$well)],
+    # Compute distance
+    D = sqrt((x_roi - x_well)^2 + (y_roi - y_well)^2) 
+  ) %>%
+  # Do the following operation for each id 
+  group_by(id) %>% 
+  # For each id, keep only the row with the minimum D
+  filter(D == min(D)) 
+
+```
+
+
+
+
+Check if one well has at maximum 1 ROI
+```{r}
+table(id_well$well) 
+```
+
+## Troubleshoot
+
+If there are wells with more than 1 ROIs, identify the id of the ROIs.
+To get the id of e.g. H12
+
+```{r}
+id_well %>%
+  filter(well == "H12") %>%
+  select(well,id)
+
+```
+
+Open the reference image and ROIs in `FIJI`, and check the ROIs based on the id to find out what is wrong.
+
+# Process pixel intensity data
+
+## Overview
+
+We will apply the following heuristic to detect putative eclosion time:
+
+- If the magnitude of difference in pixel intensity (after - before) is the largest (the most negative value) and
+- if this difference is statistically significant
+
+then, the time-point is a candidate eclosion time.
+
+
+This heuristic is implemented in a custom function `get_ecl_time`.
+
+In reality, instead of using the actual pixel intensity (median pixel intensity within the ROI), we will use rolling median of this intensity over 5 time-points around the focal time points.
+This is to reduce the noise in measurement.
+This rolling median computation as well as difference between before and after are implemented in another custom function `comp_roll_med`.
+
+
+## Preparation of data
+
+Read the formatted data
+
+```{r}
+
+d <- read.csv("test_data/rec_016_plate_1_results_formatted.csv")
+d$datetime <- as.POSIXct(paste(d$date, d$time),  format = "%Y-%m-%d %H:%M", tz = "CET")
+
+```
+
+
+Check the first few rows
+
+```{r}
+head(d)
+```
+
+The column `Median` is the median pixel intensity of the ROI.
+
+
+Merge data with the well position.
+
+```{r}
+d <- merge(d, id_well, by = "id") %>%
+  arrange(datetime, id) # Sort by date time then by id 
+
+
+```
+
+
+
+
+
+Compute rolling median of Median pixel intensity and the difference in rolling median before and after each time point using `comp_roll_med`.
+`k` is the number of time points to use for rolling median.
+`width` is the number of time points to define "before" and "after".
+Because images were taken every 10 min, $24 * 6$ should specify 1 day.
+(Not exactly, though, because we remove some timepoints in image pre-processing)
+
+
+```{r}
+d <- comp_roll_med(data = d, k = 5, width = 24 * 6)
+
+```
+
+
+Confirm that columns `roll_median`, `med_before`, `med_after`, `diff_median` are added.
+```{r}
+d %>%
+  head %>%
+  select(id, well, datetime, roll_median, med_before, med_after, diff_medians)
+```
+
+
+
+Confirm that there is a timepoint at which `roll_median` drops visibly, which should correspond to the timing of eclosion.
+
+```{r}
+
+ggplot(data = subset(d, id %in% unique(d$id)[1:3]), 
+       mapping = aes(x = datetime, 
+                     y = roll_median , 
+                     colour = well))+
+        geom_line() + 
+        scale_x_datetime() +
+        theme_bw()
+```
+
+This is usually the timepoint at which `diff_medians` is minimum.
+
+```{r}
+
+ggplot(data = subset(d, id %in% unique(d$id)[1:3]), 
+       mapping = aes(x = datetime, 
+                     y = diff_medians , 
+                     group = well, 
+                     colour = well))+
+        geom_line() + 
+        scale_x_datetime() +
+        theme_bw()
+```
+
+
+
+# Detect putative eclosion time
+        
+
+For each id, identify putative eclosion time using `get_ecl_time`.
+`width` should be the same as the `width` used in `comp_roll_med`.
+`tz` is the time zone which output is formatted.
+To avoid confusion of the summer time, specify the GMT + 1, which is confusingly, `Etc/UTC-1`
+
+
+```{r}
+res <- get_ecl_time(data = d, width = 24 * 6, tz = "Etc/UTC-1")
+```
+
+
+
+# Check 
+
+
+For each well, plot the rolling median pixel intensity over time with detected eclosion time.
+
+
+```{r, fig.width = 10, fig.height = 10}
+
+merge(d, res) %>%
+  ggplot(mapping = aes(x = datetime, y = roll_median))+
+    geom_line() + 
+    geom_vline(aes(xintercept = ecl_time), linetype = 2, col = "red") +
+    scale_x_datetime() +
+    facet_wrap(.~well)+
+    theme_bw()
+
+```
+
+
+
+
+The detected eclosion time (vertical red lines) seems wrong for B6, F6, D7, F7, G7, D9, H9, A12.
+
+If you check the images in FIJI, pupae were not visible in B6 and F6.
+You can also confirm in images that eclosion did not happen in D7, F7, G7, D9, H9.
+
+To correct these errors manually, substitute the incorrect eclosion time with NA.
+
+```{r}
+res <- merge(res, id_well) %>%
+  mutate(ecl_time = ifelse(well %in% c("B6", "F6", "D7", "F7", "G7", "D9", "H9", "C12"), 
+                           NA, 
+                           ecl_time),
+         ecl_time = as.POSIXct(ecl_time, tz = "Etc/UTC-1")) 
+  
+```
+
+
+Plot the results again to confirm the correction.
+
+```{r, fig.width = 10, fig.height = 10}
+
+merge(d, res) %>%
+  ggplot(mapping = aes(x = datetime))+
+    geom_line(aes(y = roll_median)) + 
+    geom_vline(aes(xintercept = ecl_time), linetype = 2, col = "red") +
+    scale_x_datetime() +
+    labs(aes(title = paste(as.POSIXct(ecl_time, tz = "Etc/UTC-1")), sep = ", "))+
+    facet_wrap(.~well)+
+    theme_bw()
+
+```
+
+
+
+
+Plot the number of eclosion in each hour. 
+
+
+
+
+```{r}
+bin_size <- 30/60
+res %>%
+  mutate(datetime = as.POSIXct(ecl_time, tz = "Etc/UTC-1"),
+         hour_of_day = hour(datetime) + minute(datetime)/60,
+         hour_bin = floor(hour_of_day / bin_size) * bin_size) %>%
+  count(hour_bin) %>%
+  ggplot(aes(x = hour_bin, y = n)) +
+  geom_col(width = bin_size) +
+  geom_vline(xintercept = 7 + 20/60, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = 19 + 20/60, linetype = "dashed", color = "blue") +
+  scale_x_continuous(
+    breaks = seq(0, 24, by = 4),
+    labels = function(x) sprintf("%02d:00", x),
+    limits = c(0,24)
+  ) +
+  theme_bw()
+```
+
+
+
+
+Save the result
+
+```{r}
+res <- res %>%
+  mutate(rec = "rec_016") %>%
+  select(rec, well, id, ecl_time)
+  
+```
+
+
+```{r}
+write.csv(res, "test_data/rec_016_result.csv", quote = F, row.names = F)
+```
+
+
+After genotyping, genotype column is added, and we can visualise the result for different genotypes separately.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
