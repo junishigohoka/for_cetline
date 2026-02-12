@@ -63,7 +63,7 @@ You will measure the eclosion rhythm of these flies (P0 and F2), and compare the
 If the difference in genomic background between the wild type and mutant lines affects different levels of eclosion punctuality, you will see different distribution of eclosion time between P0 and F2.
 
 
-
+![Experimental design. Blue and red "x" on chromosome 2 represent punctual and non-punctual alleles, while blue and red vertical lines represent different genomic backgrounds. The genomic background is diverse in F2.](images/experiment.png)
 
 
 
