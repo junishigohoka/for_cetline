@@ -121,14 +121,15 @@ The computers are always on, so you do not have to boot it.
 1. In terminal, log in to the focal Raspberry Pi (e.g. box 1 -> rpi1, box4 -> rpi2 etc) by entering the following command. Change `rpi1` to one of `rpi1`, `rpi2`, `rpi3`, `rpi4`.
 
     ```bash
-    ssh rpi2-admin
+    ssh junishigohoka@rpi2
     ```
 
+1. You will be asked for password. Type `pi` and press Enter.
 1. Confirm that you see something like the following in terminal.
 This means that any command you run in this terminal will be run not in `rpi0` but in `rpi2`.
 
    ```
-   junishigohoka@rpi1:~ $
+   junishigohoka@rpi2:~ $
    ```
 This tells you that you have logged in as user `junishigohoka` to computer `rpi2`.
 

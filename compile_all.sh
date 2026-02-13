@@ -30,4 +30,9 @@ pandoc src/image_analysis.md -o protocols_pdf/image_analysis.pdf --filter pandoc
 Rscript -e "rmarkdown::render('src/eclosion_detection.Rmd', output_dir = 'protocols_pdf')"
 
 
+# DNA extraction
+libreoffice --headless --convert-to pdf src/DNA_extraction.docx --outdir protocols_pdf
+
+# Amplicon PCR
+libreoffice --headless --convert-to pdf src/amplicon_PCR.docx --outdir protocols_pdf
 
